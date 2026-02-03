@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Onyx & Light Theme - Active */
+    /* Onyx & Light Theme Variables - Deep Black & High Contrast White */
+    --ui-bg: #000000;
+    --ui-fg: #FFFFFF;
+    --ui-muted: #A3A3A3;
+    --ui-border: #333333;
+    --ui-border-hover: #FFFFFF;
+    --ui-primary: #FFFFFF;
+    --ui-primary-hover: #E5E5E5;
+    --ui-chrome-bg: #0A0A0A;
+    --ui-surface: #111111;
+    --ui-surface-alt: #1A1A1A;
+    --ui-active-bg: #222222;
+    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+
+    /* Glow Effects */
+    --glow-strong: 0 0 15px rgba(255, 255, 255, 0.3);
+    --glow-subtle: 0 0 8px rgba(255, 255, 255, 0.1);
+  }
+
+  /* Light mode override - Stark White & Black */
+  body.light-mode {
+    --ui-bg: #FFFFFF;
+    --ui-fg: #000000;
+    --ui-muted: #525252;
+    --ui-border: #E5E5E5;
+    --ui-border-hover: #000000;
+    --ui-primary: #000000;
+    --ui-primary-hover: #333333;
+    --ui-chrome-bg: #F5F5F5;
+    --ui-surface: #FFFFFF;
+    --ui-surface-alt: #FAFAFA;
+    --ui-active-bg: #F0F0F0;
+
+    --glow-strong: 0 0 15px rgba(0, 0, 0, 0.1);
+    --glow-subtle: 0 0 8px rgba(0, 0, 0, 0.05);
+  }
+
+  body.light-mode .glass-panel {
+    background: #FFFFFF;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  }
+
+  body {
+    background-color: var(--ui-bg);
+    color: var(--ui-fg);
+    font-family: var(--font-sans);
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+}
+
+/* Custom Scrollbar - Minimalist */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* Utilities */
+.glass-panel {
+  background: rgba(17, 17, 17, 0.95);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--ui-border);
+}
+
+.glow-text {
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+}
+
+.glow-border {
+  border-color: var(--ui-primary);
+  box-shadow: var(--glow-strong);
+}
