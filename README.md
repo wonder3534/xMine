@@ -34,9 +34,6 @@
 
 ### 2. 获取代码与安装依赖
 ```bash
-# 进入项目目录
-cd extension
-
 # 安装项目依赖
 npm install
 ```
@@ -58,7 +55,7 @@ npm run build
 1.  打开 Chrome 浏览器，访问 `chrome://extensions/`。
 2.  开启右上角的 **"开发者模式" (Developer mode)**。
 3.  点击左上角的 **"加载已解压的扩展程序" (Load unpacked)**。
-4.  选择本项目下的 **`extension/dist`** 文件夹（注意是 `dist` 目录，不是根目录）。
+4.  选择本项目下的 **`dist`** 文件夹。
 5.  加载成功后，您应该能看到 **xMine** 插件图标。
 
 ## 📖 使用说明
