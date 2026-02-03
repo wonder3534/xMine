@@ -1,4 +1,4 @@
-# xMine Chrome Extension
+# xMine
 
 一个用户于捕获、管理和导出 X (Twitter) 推文与回复Chrome浏览器插件。它提供了一个仪表盘界面，帮助用户高效整理信息，并支持一键导出到 Obsidian 知识库。
 
