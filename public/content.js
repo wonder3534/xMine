@@ -524,46 +524,93 @@ function parseArticle(article) {
         }
       }
     }
+  } // end: if (!text || text.length < 50)
 
-    // 最后备选：收集语义化元素，保留格式
-    if (!text || text.length < 50) {
-      const richEls = article.querySelectorAll('h1, h2, h3, h4, p, li')
-      const richParts = []
-      richEls.forEach((el) => {
-        if (el.closest('[data-testid="User-Name"]')) return
-        if (el.closest('[data-testid="reply"]')) return
-        if (el.closest('[role="group"]')) return
-        const t = htmlToMarkdown(el).trim()
-        if (t && !richParts.includes(t)) richParts.push(t)
-      })
-      if (richParts.length > 0) {
-        const combined = richParts.join('\n\n').trim()
-        if (combined.length > text.length) {
-          text = combined
+  // --- 标题提取：专为 X Notes 等文章型推文（三层策略）---
+  try {
+    let titleText = ''
+
+    // 策略1：标准语义标签 + role="heading"] + X 专属 testid
+    const titleCandidateSelectors = [
+      'h1', 'h2',
+      '[role="heading"]',
+      '[data-testid*="title"]',
+      '[data-testid*="heading"]',
+      '[data-testid*="article-title"]',
+    ]
+    for (const sel of titleCandidateSelectors) {
+      const els = article.querySelectorAll(sel)
+      for (const el of els) {
+        if (textEl && textEl.contains(el)) continue
+        if (el.closest('[data-testid="User-Name"]')) continue
+        if (el.closest('[role="group"]')) continue
+        if (el.closest('[data-testid="reply"]')) continue
+        const t = (el.innerText || '').trim()
+        if (t && t.length > 5 && !text.includes(t)) {
+          titleText = t
+          break
+        }
+      }
+      if (titleText) break
+    }
+
+    // 策略2：若语义标签无结果，用 DOM 位置比较找 tweetText 之前的最长文本块
+    if (!titleText && textEl) {
+      const allEls = Array.from(article.querySelectorAll('*'))
+      let bestLen = 0
+
+      for (const el of allEls) {
+        // 必须在 tweetText 之前（DOM 顺序）
+        const pos = textEl.compareDocumentPosition(el)
+        const isBefore = !!(pos & Node.DOCUMENT_POSITION_FOLLOWING)
+        if (!isBefore) continue
+
+        // 跳过排除区域
+        if (el.closest('[data-testid="User-Name"]')) continue
+        if (el.closest('[role="group"]')) continue
+        if (el.closest('[data-testid="reply"]')) continue
+        const tag = (el.tagName || '').toLowerCase()
+        if (['svg', 'img', 'picture', 'figure', 'video', 'button', 'time', 'script', 'style'].includes(tag)) continue
+
+        // 只取有直接文本节点的元素（不只是包装容器）
+        const directTextLen = Array.from(el.childNodes)
+          .filter(n => n.nodeType === 3 && n.textContent.trim().length > 0)
+          .reduce((sum, n) => sum + n.textContent.trim().length, 0)
+        if (directTextLen < 8) continue
+
+        const t = (el.innerText || '').trim()
+        // 找最长的、还没出现在 text 里的文本块
+        if (t.length > bestLen && t.length > 8 && !text.includes(t)) {
+          bestLen = t.length
+          titleText = t
         }
       }
     }
-  }
 
-  // --- 提取 X Notes 文章标题（h1 在 tweetText 之外）---
-  // X Notes 的大标题是独立 <h1> 元素，位于 tweetText 上方，需单独处理
-  try {
-    const h1Els = article.querySelectorAll('h1, h2')
-    h1Els.forEach((h1) => {
-      // 跳过 tweetText 内部的（已被 htmlToMarkdown 处理）
-      if (textEl && textEl.contains(h1)) return
-      // 跳过用户名区域、操作栏区域
-      if (h1.closest('[data-testid="User-Name"]')) return
-      if (h1.closest('[role="group"]')) return
-      if (h1.closest('[data-testid="reply"]')) return
-      const level = h1.tagName.toLowerCase() === 'h1' ? '#' : '##'
-      const titleText = (h1.innerText || '').trim()
-      // 不重复添加已在 text 中出现的内容
-      if (titleText && !text.includes(titleText)) {
-        text = `${level} ${titleText}\n\n${text}`.trim()
-      }
-    })
+    // 找到标题后，前置到正文
+    if (titleText) {
+      text = `# ${titleText}\n\n${text}`.trim()
+    }
   } catch (e) { /* 标题提取失败不影响正文 */ }
+
+  // 最后备选：收集语义化元素（仃用于 text 仍不足 50 字符的情况）
+  if (!text || text.length < 50) {
+    const richEls = article.querySelectorAll('h1, h2, h3, h4, p, li')
+    const richParts = []
+    richEls.forEach((el) => {
+      if (el.closest('[data-testid="User-Name"]')) return
+      if (el.closest('[data-testid="reply"]')) return
+      if (el.closest('[role="group"]')) return
+      const t = htmlToMarkdown(el).trim()
+      if (t && !richParts.includes(t)) richParts.push(t)
+    })
+    if (richParts.length > 0) {
+      const combined = richParts.join('\n\n').trim()
+      if (combined.length > text.length) {
+        text = combined
+      }
+    }
+  }
 
   // --- 提取链接：包括 tweetText 内的 <a> 和链接预览卡片（card.wrapper）---
   const collectedLinks = []
