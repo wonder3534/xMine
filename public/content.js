@@ -545,6 +545,26 @@ function parseArticle(article) {
     }
   }
 
+  // --- 提取 X Notes 文章标题（h1 在 tweetText 之外）---
+  // X Notes 的大标题是独立 <h1> 元素，位于 tweetText 上方，需单独处理
+  try {
+    const h1Els = article.querySelectorAll('h1, h2')
+    h1Els.forEach((h1) => {
+      // 跳过 tweetText 内部的（已被 htmlToMarkdown 处理）
+      if (textEl && textEl.contains(h1)) return
+      // 跳过用户名区域、操作栏区域
+      if (h1.closest('[data-testid="User-Name"]')) return
+      if (h1.closest('[role="group"]')) return
+      if (h1.closest('[data-testid="reply"]')) return
+      const level = h1.tagName.toLowerCase() === 'h1' ? '#' : '##'
+      const titleText = (h1.innerText || '').trim()
+      // 不重复添加已在 text 中出现的内容
+      if (titleText && !text.includes(titleText)) {
+        text = `${level} ${titleText}\n\n${text}`.trim()
+      }
+    })
+  } catch (e) { /* 标题提取失败不影响正文 */ }
+
   // --- 提取链接：包括 tweetText 内的 <a> 和链接预览卡片（card.wrapper）---
   const collectedLinks = []
 
