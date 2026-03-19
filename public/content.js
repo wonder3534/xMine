@@ -246,13 +246,34 @@ function findShowMoreButtons(article) {
 }
 
 async function expandArticleText(article) {
-  for (let i = 0; i < 4; i += 1) {
+  for (let i = 0; i < 3; i += 1) {
     const btns = findShowMoreButtons(article)
     if (!btns || btns.length === 0) return
     try {
       btns[0].click()
     } catch { }
-    await sleep(60)
+
+    // X Notes / 长篇推文点击“显示更多”后内容通过 API 异步加载，
+    // 轮询等待直到 tweetText 内容稳定（不再变化），最长等 3000ms
+    const tweetTextEl = article.querySelector('[data-testid="tweetText"]')
+    if (tweetTextEl) {
+      let prevLen = -1
+      let stableCount = 0
+      for (let w = 0; w < 15; w++) {
+        await sleep(200)
+        const curLen = (tweetTextEl.innerText || '').length
+        if (curLen === prevLen) {
+          stableCount++
+          if (stableCount >= 2) break  // 连续 2 次相同则认为稳定
+        } else {
+          stableCount = 0
+        }
+        prevLen = curLen
+      }
+    } else {
+      // 找不到 tweetText，等待较长时间让内容加载
+      await sleep(1500)
+    }
   }
 }
 
@@ -395,6 +416,48 @@ function parseArticle(article) {
   const textEl = article.querySelector('[data-testid="tweetText"]')
   const textRaw = textEl && textEl.innerText ? textEl.innerText.trim() : ''
   let text = cleanTweetText(textRaw)
+
+  // --- 对于 X Notes / 长篇文章类推文，尝试从文章内容容器读取全文 ---
+  // X Notes 展开后，内容可能不在 tweetText 里，而是在独立的文章容器中
+  if (!text || text.length < 50) {
+    // 尝试多种 X Notes 内容容器选择器
+    const noteSelectors = [
+      '[data-testid="article"]',           // X Notes 文章容器
+      '[data-testid="tweetText"]',          // 常规推文（已尝试）
+      'div[data-contents="true"]',          // Draft.js / ProseMirror 内容
+    ]
+    for (const sel of noteSelectors) {
+      const el = article.querySelector(sel)
+      if (el && el !== textEl) {
+        const noteText = (el.innerText || '').trim()
+        if (noteText.length > text.length) {
+          text = cleanTweetText(noteText)
+          break
+        }
+      }
+    }
+
+    // 最后备选：收集 article 内所有语义化文字元素（p, h1-h3, li）
+    // 适用于 X Notes 使用自定义内容渲染器的情况
+    if (!text || text.length < 50) {
+      const richEls = article.querySelectorAll('p, h1, h2, h3, li')
+      const richParts = []
+      richEls.forEach((el) => {
+        // 跳过属于操作栏 / 用户名区域 / 时间区域的元素
+        if (el.closest('[data-testid="User-Name"]')) return
+        if (el.closest('[data-testid="reply"]')) return
+        if (el.closest('[role="group"]')) return
+        const t = (el.innerText || '').trim()
+        if (t && !richParts.includes(t)) richParts.push(t)
+      })
+      if (richParts.length > 0) {
+        const combined = richParts.join('\n').trim()
+        if (combined.length > text.length) {
+          text = cleanTweetText(combined)
+        }
+      }
+    }
+  }
 
   // --- 提取链接：包括 tweetText 内的 <a> 和链接预览卡片（card.wrapper）---
   const collectedLinks = []
