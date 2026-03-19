@@ -704,7 +704,10 @@ async function getSelectedItems() {
       }
       parsedMain.replies = replies
     } else {
-      parsedMain.replies = await collectRepliesForStatus(main)
+      // 用户只选择了主推文，不自动收集评论
+      // 之前的 collectRepliesForStatus 会把页面上所有后续 article 都当成 replies，
+      // 导致用户未选择的评论也被抓取，这里改为不自动填充。
+      parsedMain.replies = []
     }
 
     return [parsedMain]
@@ -956,11 +959,10 @@ async function handleQuickMine(article, btn) {
 function ensureQuickMineBtn(article) {
   if (!article || article.querySelector('.xmine-quick-btn')) return
 
-  // 【关键】只对顶层 article 添加按钮（跳过嵌套 article，如 X Notes 内容区）
-  // X Notes 的 DOM 中外层 article 内可能还有内层 article
-  // 如果对内层 article 也添加按钮，点击时 handleQuickMine 收到的 article
-  // 与 captureThreadToTarget 检测到的 mainArticle 不一致，导致误抓评论
-  if (article.closest('article:not(:scope)') || article.parentElement?.closest('article')) {
+  // 【关键】只对顶层 article 添加按钮
+  // X Notes 等内容区可能嵌套 article，需排除子层 article
+  // 使用 parentElement.closest('article') 可靠地检测是否有祖先 article
+  if (article.parentElement && article.parentElement.closest('article')) {
     return
   }
 
