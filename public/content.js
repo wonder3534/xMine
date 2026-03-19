@@ -220,6 +220,97 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * HTML DOM 节点 → Markdown 文本转换器
+ * 用于保留 X Notes 等长篇文章的标题、粗体、代码块等格式
+ */
+function htmlToMarkdown(el) {
+  if (!el) return ''
+
+  function processNode(node) {
+    // 文本节点
+    if (node.nodeType === 3) return node.textContent
+    if (node.nodeType !== 1) return ''
+
+    const tag = (node.tagName || '').toLowerCase()
+    // 跳过图标、按钮、SVG 等非内容元素
+    if (['svg', 'img', 'button', 'script', 'style'].includes(tag)) return ''
+    // 跳过操作栏区域
+    if (node.closest('[role="group"]') || node.closest('[data-testid="reply"]')) return ''
+
+    const children = Array.from(node.childNodes).map(processNode).join('')
+
+    switch (tag) {
+      // 粗体
+      case 'strong': case 'b': {
+        const t = children.trim()
+        return t ? `**${t}**` : ''
+      }
+      // 斜体
+      case 'em': case 'i': {
+        const t = children.trim()
+        return t ? `_${t}_` : ''
+      }
+      // 标题
+      case 'h1': return `\n\n# ${children.trim()}\n\n`
+      case 'h2': return `\n\n## ${children.trim()}\n\n`
+      case 'h3': return `\n\n### ${children.trim()}\n\n`
+      case 'h4': case 'h5': case 'h6': return `\n\n#### ${children.trim()}\n\n`
+      // 段落
+      case 'p': {
+        const t = children.trim()
+        return t ? `\n\n${t}\n\n` : ''
+      }
+      // 换行
+      case 'br': return '\n'
+      // 代码块：pre 包裹 code
+      case 'pre': {
+        const codeEl = node.querySelector('code')
+        const raw = ((codeEl ? codeEl.innerText : node.innerText) || '').trim()
+        return raw ? `\n\n\`\`\`\n${raw}\n\`\`\`\n\n` : ''
+      }
+      // 行内代码（不在 pre 里）
+      case 'code': {
+        if (node.closest('pre')) return children  // 在 pre 里就不再包裹
+        return `\`${children.trim()}\``
+      }
+      // 无序列表
+      case 'ul': {
+        const items = Array.from(node.children)
+          .filter(c => c.tagName.toLowerCase() === 'li')
+          .map(li => `- ${Array.from(li.childNodes).map(processNode).join('').trim()}`)
+          .join('\n')
+        return items ? `\n\n${items}\n\n` : ''
+      }
+      // 有序列表
+      case 'ol': {
+        let idx = 1
+        const items = Array.from(node.children)
+          .filter(c => c.tagName.toLowerCase() === 'li')
+          .map(li => `${idx++}. ${Array.from(li.childNodes).map(processNode).join('').trim()}`)
+          .join('\n')
+        return items ? `\n\n${items}\n\n` : ''
+      }
+      case 'li': return children
+      // 引用块
+      case 'blockquote': {
+        const t = children.trim().replace(/\n/g, '\n> ')
+        return t ? `\n\n> ${t}\n\n` : ''
+      }
+      // 分隔线
+      case 'hr': return '\n\n---\n\n'
+      // 链接：只保留文字（URL 单独提取）
+      case 'a': return children
+      // div / span 等：默认递归处理子节点
+      default: return children
+    }
+  }
+
+  const raw = Array.from(el.childNodes).map(processNode).join('')
+  // 清理连续空行（超过 2 个换行的压缩为 2 个）
+  return raw.replace(/\n{3,}/g, '\n\n').trim()
+}
+
 const SHOW_MORE_TEXTS = new Set(['显示更多', 'Show more', 'Read more', '展开'])
 
 function cleanTweetText(text) {
@@ -414,46 +505,41 @@ function parseArticle(article) {
   const authorAvatar = avatarImg && avatarImg.src ? avatarImg.src : ''
 
   const textEl = article.querySelector('[data-testid="tweetText"]')
-  const textRaw = textEl && textEl.innerText ? textEl.innerText.trim() : ''
-  let text = cleanTweetText(textRaw)
+  // 使用 htmlToMarkdown 保留粗体、标题、代码块等格式
+  let text = textEl ? htmlToMarkdown(textEl) : ''
 
-  // --- 对于 X Notes / 长篇文章类推文，尝试从文章内容容器读取全文 ---
-  // X Notes 展开后，内容可能不在 tweetText 里，而是在独立的文章容器中
+  // --- 对于 X Notes / 长篇文章类推文，尝试从更大容器获取全文，并保留格式 ---
   if (!text || text.length < 50) {
-    // 尝试多种 X Notes 内容容器选择器
     const noteSelectors = [
-      '[data-testid="article"]',           // X Notes 文章容器
-      '[data-testid="tweetText"]',          // 常规推文（已尝试）
-      'div[data-contents="true"]',          // Draft.js / ProseMirror 内容
+      '[data-testid="article"]',      // X Notes 文章容器
+      'div[data-contents="true"]',    // Draft.js / ProseMirror 内容
     ]
     for (const sel of noteSelectors) {
       const el = article.querySelector(sel)
       if (el && el !== textEl) {
-        const noteText = (el.innerText || '').trim()
+        const noteText = htmlToMarkdown(el)
         if (noteText.length > text.length) {
-          text = cleanTweetText(noteText)
+          text = noteText
           break
         }
       }
     }
 
-    // 最后备选：收集 article 内所有语义化文字元素（p, h1-h3, li）
-    // 适用于 X Notes 使用自定义内容渲染器的情况
+    // 最后备选：收集语义化元素，保留格式
     if (!text || text.length < 50) {
-      const richEls = article.querySelectorAll('p, h1, h2, h3, li')
+      const richEls = article.querySelectorAll('h1, h2, h3, h4, p, li')
       const richParts = []
       richEls.forEach((el) => {
-        // 跳过属于操作栏 / 用户名区域 / 时间区域的元素
         if (el.closest('[data-testid="User-Name"]')) return
         if (el.closest('[data-testid="reply"]')) return
         if (el.closest('[role="group"]')) return
-        const t = (el.innerText || '').trim()
+        const t = htmlToMarkdown(el).trim()
         if (t && !richParts.includes(t)) richParts.push(t)
       })
       if (richParts.length > 0) {
-        const combined = richParts.join('\n').trim()
+        const combined = richParts.join('\n\n').trim()
         if (combined.length > text.length) {
-          text = cleanTweetText(combined)
+          text = combined
         }
       }
     }
