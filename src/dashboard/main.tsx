@@ -2245,11 +2245,11 @@ ${it.replies.map(r => `${r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  
                     </div>
                   </div>
 
-                  <div className="text-[15px] leading-relaxed text-[var(--ui-fg)] whitespace-pre-wrap mb-4">
+                  <ImageGrid urls={active.tweet.images} />
+
+                  <div className="text-[15px] leading-relaxed text-[var(--ui-fg)] whitespace-pre-wrap mb-4 mt-4">
                     {active.tweet.text}
                   </div>
-
-                  <ImageGrid urls={active.tweet.images} />
 
                   {active.replies && active.replies.length > 0 && (
                     <div className="mt-8 pt-6 border-t border-[var(--ui-border)]">

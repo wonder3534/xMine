@@ -807,15 +807,18 @@ async function captureThreadToTarget(targetArticle) {
     }
   }
 
-  // 如果没找到，或者 target 本身就是 main，则只抓 target 单条
-  if (mainIndex === -1 || all[mainIndex] === targetArticle) {
-    await expandArticleText(targetArticle)
-    const parsed = parseArticle(targetArticle)
+  // 如果没找到，或者 target 本身就是 main，
+  // 或者 target 是 main 的子元素（X Notes 嵌套 article 结构），则只抓单条
+  const mainArticle = mainIndex >= 0 ? all[mainIndex] : null
+  const targetIsMainOrChild = mainArticle && (mainArticle === targetArticle || mainArticle.contains(targetArticle))
+  if (mainIndex === -1 || targetIsMainOrChild) {
+    // 用 mainArticle（若存在）解析，以获取更完整的内容（外层 article 有 status 链接等元数据）
+    const artToParse = mainArticle || targetArticle
+    await expandArticleText(artToParse)
+    const parsed = parseArticle(artToParse)
     const hasContent = parsed.tweet && (parsed.tweet.text || parsed.tweet.authorHandle)
     return hasContent ? [parsed] : []
   }
-
-  const mainArticle = all[mainIndex]
   const targetIndex = all.indexOf(targetArticle)
 
   // 安全检查：target 必须在 main 之后
@@ -953,8 +956,15 @@ async function handleQuickMine(article, btn) {
 function ensureQuickMineBtn(article) {
   if (!article || article.querySelector('.xmine-quick-btn')) return
 
-  // Find the action bar (Repy, Retweet, Like, Share group)
-  // It usually has role="group"
+  // 【关键】只对顶层 article 添加按钮（跳过嵌套 article，如 X Notes 内容区）
+  // X Notes 的 DOM 中外层 article 内可能还有内层 article
+  // 如果对内层 article 也添加按钮，点击时 handleQuickMine 收到的 article
+  // 与 captureThreadToTarget 检测到的 mainArticle 不一致，导致误抓评论
+  if (article.closest('article:not(:scope)') || article.parentElement?.closest('article')) {
+    return
+  }
+
+  // Find the action bar (Reply, Retweet, Like, Share group)
   const group = article.querySelector('div[role="group"]')
   if (!group) return
 
@@ -972,8 +982,6 @@ function ensureQuickMineBtn(article) {
     handleQuickMine(article, btn)
   })
 
-  // Append to the group (usually as last item)
-  // Sometimes Share is the last one.
   group.appendChild(btn)
 }
 
