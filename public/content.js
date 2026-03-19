@@ -399,14 +399,20 @@ function parseArticle(article) {
   // --- 提取链接：包括 tweetText 内的 <a> 和链接预览卡片（card.wrapper）---
   const collectedLinks = []
 
-  // 1. 提取 tweetText 内所有 <a> 标签的真实 href（t.co 展开后的 URL 在 data-expanded-url 或 href 上）
+  // 1. 提取 tweetText 内所有外部链接（过滤 hashtag/mention 等 x.com 站内链接）
+  //    判断依据：优先用 data-expanded-url，它存储了 t.co 展开后的真实 URL
+  //    只有展开后的 URL 是外部地址（非 twitter.com / x.com）才算外链
   if (textEl) {
     textEl.querySelectorAll('a[href]').forEach((a) => {
-      // X 平台在 <a> 上会有 data-expanded-url 属性存放展开的真实 URL
-      const expanded = a.getAttribute('data-expanded-url') || a.href || ''
-      if (expanded && !expanded.includes('twitter.com') && !expanded.includes('x.com')) {
-        collectedLinks.push(expanded)
+      const expandedUrl = a.getAttribute('data-expanded-url') || ''
+      if (expandedUrl) {
+        // data-expanded-url 存在，用它判断是否为外链
+        if (!expandedUrl.includes('twitter.com') && !expandedUrl.includes('x.com')) {
+          collectedLinks.push(expandedUrl)
+        }
       }
+      // 没有 data-expanded-url 的 <a>（如 hashtag / mention）不处理，
+      // 因为它们本身显示在 innerText 里，不需要额外追加
     })
   }
 
@@ -414,19 +420,19 @@ function parseArticle(article) {
   //    X 平台 card 的选择器：[data-testid="card.wrapper"] 内的顶层 <a>
   const cardWrappers = article.querySelectorAll('[data-testid="card.wrapper"]')
   cardWrappers.forEach((card) => {
-    // card 内顶层 <a> 标签含有真实链接
     const cardLink = card.querySelector('a[href]')
     if (cardLink && cardLink.href) {
       collectedLinks.push(cardLink.href)
     }
   })
 
-  // 3. 如果 card.wrapper 没有命中，尝试备用选择器（不同 X 版本可能不同）
+  // 3. 备用：card.wrapper 未命中时，尝试其他 card 选择器
   if (cardWrappers.length === 0) {
-    const altCardLinks = article.querySelectorAll('[data-testid^="card"] a[href], div[class*="card"] a[href]')
+    const altCardLinks = article.querySelectorAll('[data-testid^="card"] a[href]')
     altCardLinks.forEach((a) => {
       const href = a.href || ''
-      if (href && !href.includes('/status/') && !href.includes('twitter.com/i/') && !href.includes('x.com/i/')) {
+      // 排除推文状态链接和 X 内部链接
+      if (href && !href.includes('/status/') && !href.match(/x\.com\/(i|home|search|explore|notifications|messages)/) && !href.match(/twitter\.com\/(i|home)/)) {
         collectedLinks.push(href)
       }
     })
@@ -466,7 +472,11 @@ function parseArticle(article) {
     }
   })
 
-  const id = url || (publishedAt ? `${publishedAt}_${authorHandle}` : `${authorHandle}_${text.slice(0, 24)}`)
+  // id 生成优先级：推文 URL > 时间+作者 > 作者+文字摘要
+  // 注意：即使 text 为空（纯图推文），也要保证 id 不为空
+  const id = url || (publishedAt
+    ? `${publishedAt}_${authorHandle}`
+    : `${authorHandle}_${text.slice(0, 24) || images[0] || Date.now()}`)
 
   /* Metrics extraction */
   function getCount(selector, fallbackSelectors = []) {
@@ -610,7 +620,8 @@ async function getSelectedItems() {
     if (!main) return []
     await expandArticleText(main)
     const parsedMain = parseArticle(main)
-    if (!parsedMain.tweet || !parsedMain.tweet.text) return []
+    // 只要有作者信息就视为有效（纯图推文可能没有文字）
+    if (!parsedMain.tweet || (!parsedMain.tweet.text && !parsedMain.tweet.authorHandle && parsedMain.tweet.images.length === 0)) return []
 
     const others = articles.filter((a) => a !== main)
     if (others.length > 0) {
@@ -636,7 +647,8 @@ async function getSelectedItems() {
     return [parsedMain]
   }
 
-  return articles.map((a) => parseArticle(a)).filter((i) => i.tweet && i.tweet.text)
+  // 只要有作者信息就保留（纯图推文可能没有文字）
+  return articles.map((a) => parseArticle(a)).filter((i) => i.tweet && (i.tweet.text || i.tweet.authorHandle || (i.tweet.images && i.tweet.images.length > 0)))
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -736,7 +748,8 @@ async function captureThreadToTarget(targetArticle) {
   if (mainIndex === -1 || all[mainIndex] === targetArticle) {
     await expandArticleText(targetArticle)
     const parsed = parseArticle(targetArticle)
-    return parsed.tweet && parsed.tweet.text ? [parsed] : []
+    const hasContent = parsed.tweet && (parsed.tweet.text || parsed.tweet.authorHandle)
+    return hasContent ? [parsed] : []
   }
 
   const mainArticle = all[mainIndex]
@@ -746,16 +759,17 @@ async function captureThreadToTarget(targetArticle) {
   if (targetIndex <= mainIndex) {
     await expandArticleText(targetArticle)
     const parsed = parseArticle(targetArticle)
-    return parsed.tweet && parsed.tweet.text ? [parsed] : []
+    const hasContent = parsed.tweet && (parsed.tweet.text || parsed.tweet.authorHandle)
+    return hasContent ? [parsed] : []
   }
 
   // 截取从 main 到 target 之间的所有 articles（含两端）
   const threadArticles = all.slice(mainIndex, targetIndex + 1)
 
-  // 处理主推文
+  // 处理主推文：只要有作者信息就视为有效（纯图推文可能没有文字）
   await expandArticleText(mainArticle)
   const parsedMain = parseArticle(mainArticle)
-  if (!parsedMain.tweet || !parsedMain.tweet.text) return []
+  if (!parsedMain.tweet || (!parsedMain.tweet.text && !parsedMain.tweet.authorHandle)) return []
 
   // 处理回复（从 index 1 开始，跳过主推文）
   const replies = []
@@ -810,10 +824,11 @@ async function handleQuickMine(article, btn) {
   }
 
   // Fallback or Non-Status Page: Single Item
+  // 只要有作者信息就视为有效（纯图推文 text 可以为空）
   if (itemsToSave.length === 0) {
     await expandArticleText(article)
     const parsed = parseArticle(article)
-    if (parsed.tweet && parsed.tweet.text) {
+    if (parsed.tweet && (parsed.tweet.text || parsed.tweet.authorHandle || (parsed.tweet.images && parsed.tweet.images.length > 0))) {
       itemsToSave = [parsed]
     }
   }
