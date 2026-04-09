@@ -51,6 +51,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     getItems()
       .then(async (existing) => {
         const next = existing.slice()
+        const newItems = []
         for (const it of incoming) {
           const incomingUrl = it.tweet.url || ''
           const incomingId = it.tweet.id || ''
@@ -130,7 +131,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             tweet: it.tweet || it,
             replies: Array.isArray(it.replies) ? it.replies : (Array.isArray(it.comments) ? it.comments : []),
           }
-          next.unshift(item)
+          newItems.push(item)
+        }
+        // Unshift in reverse so DOM order is preserved (first selected = first in list)
+        for (let i = newItems.length - 1; i >= 0; i--) {
+          next.unshift(newItems[i])
         }
         await setItems(next)
         await openDashboard()

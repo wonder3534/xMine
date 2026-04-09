@@ -13,6 +13,7 @@ type Item = {
   capturedAt: string
   tweet: {
     id: string
+    title?: string
     authorName: string
     authorHandle: string
     authorAvatar: string
@@ -168,6 +169,60 @@ function ImageGrid({ urls }: { urls: string[] }) {
           />
         </a>
       ))}
+    </div>
+  )
+}
+
+/**
+ * 将 tweet.text 中的 ![image](url) / ![video-poster](url) 渲染为内联图片，
+ * 其余文字保持 whitespace-pre-wrap 格式。
+ * 若文本中无内联图片，则回退为普通文字 + ImageGrid。
+ */
+function TweetTextWithImages({ text, images, textClassName = '' }: { text: string; images?: string[]; textClassName?: string }) {
+  const IMG_PATTERN = /!\[(?:image|video-poster)\]\((https?:\/\/[^)]+)\)/g
+  const hasInline = IMG_PATTERN.test(text)
+
+  if (!hasInline) {
+    return (
+      <>
+        <div className={`leading-relaxed whitespace-pre-wrap ${textClassName}`}>{text}</div>
+        {images && images.length > 0 && <ImageGrid urls={images} />}
+      </>
+    )
+  }
+
+  const SPLIT = /(!\[(?:image|video-poster)\]\(https?:\/\/[^)]+\))/g
+  const parts = text.split(SPLIT)
+  const URL_EXTRACT = /!\[(?:image|video-poster)\]\((https?:\/\/[^)]+)\)/
+
+  return (
+    <div className="space-y-3">
+      {parts.map((part, i) => {
+        const m = part.match(URL_EXTRACT)
+        if (m) {
+          const imgUrl = normalizeXImageUrl(m[1])
+          return (
+            <a key={i} href={imgUrl} target="_blank" rel="noreferrer"
+              className="block rounded-lg overflow-hidden border border-[var(--ui-border)] bg-[var(--ui-chrome-bg)] hover:opacity-95 transition-opacity">
+              <img
+                src={imgUrl}
+                alt=""
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                className="w-full max-w-full h-auto block"
+                onError={(e) => { e.currentTarget.style.display = 'none' }}
+              />
+            </a>
+          )
+        }
+        const trimmed = part.trim()
+        if (!trimmed) return null
+        return (
+          <div key={i} className={`leading-relaxed whitespace-pre-wrap ${textClassName}`}>
+            {trimmed}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -827,7 +882,8 @@ function DashboardApp() {
 
     for (const it of selectedItems) {
       const dateStr = formatDateTime(it.tweet.publishedAt || it.capturedAt).replace(/[: ]/g, '_')
-      const fileName = sanitizeFileName(`${dateStr}_${it.tweet.authorHandle}_${it.tweet.id.slice(-6)}`) + '.md'
+      const baseName = it.tweet.title || `${dateStr}_${it.tweet.authorHandle}_${it.tweet.id.slice(-6)}`
+      const fileName = sanitizeFileName(baseName) + '.md'
 
       const getHighResUrl = (url: string) => {
         try {
@@ -842,9 +898,11 @@ function DashboardApp() {
       }
 
       let content = it.tweet.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')
+      // 若正文已含内联图片（X Notes 长文），不再末尾重复追加
+      const hasInlineImgs = content.includes('![image](')
 
       const frontmatter = `---
-title: "Thread by @${it.tweet.authorHandle}"
+title: "${(it.tweet.title || `Thread by @${it.tweet.authorHandle}`).replace(/"/g, '\\"')}"
 link: ${it.tweet.url || ''}
 author: "@${it.tweet.authorHandle}"
 published: ${formatDateTime(it.tweet.publishedAt).split(' ')[0].replace(/-/g, '/')}
@@ -852,15 +910,22 @@ created: ${formatDateTime(it.capturedAt).split(' ')[0].replace(/-/g, '/')}
 tags: [${(it.tags || []).map(t => `"${t}"`).join(', ')}]
 ---`
 
+      const imgSection = hasInlineImgs ? '' : it.tweet.images.map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
+
       const finalContent = `
 ${frontmatter}
 
 ${content}
 
-${it.tweet.images.map(img => `![image](${getHighResUrl(img)})`).join('\n\n')}
+${imgSection}
 
 ${it.replies && it.replies.length > 0 ? `
-${it.replies.map(r => `${r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')}\n\n${(r.images || []).map(img => `![image](${getHighResUrl(img)})`).join('\n\n')}`).join('\n\n')}
+${it.replies.map(r => {
+  const rContent = r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')
+  const rHasInline = rContent.includes('![image](')
+  const rImgs = rHasInline ? '' : (r.images || []).map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
+  return `${rContent}\n\n${rImgs}`
+}).join('\n\n')}
 ` : ''}
       `.trim()
 
@@ -909,6 +974,7 @@ tags: []
 
       const tweetsContent = selectedItems.map((it, idx) => {
         const content = it.tweet.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')
+        const hasInlineImgs = content.includes('![image](')
 
         // 每条推文的元数据以普通文本格式展示
         const metadata = `**Author:** @${it.tweet.authorHandle} (${it.tweet.authorName})  
@@ -916,10 +982,15 @@ tags: []
 **Published:** ${formatDateTime(it.tweet.publishedAt).split(' ')[0]}  
 **Captured:** ${formatDateTime(it.capturedAt).split(' ')[0]}`
 
-        const images = it.tweet.images.map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
+        const images = hasInlineImgs ? '' : it.tweet.images.map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
 
         const replies = it.replies && it.replies.length > 0
-          ? `\n\n${it.replies.map(r => `${r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')}\n\n${(r.images || []).map(img => `![image](${getHighResUrl(img)})`).join('\n\n')}`).join('\n\n')}`
+          ? `\n\n${it.replies.map(r => {
+            const rContent = r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')
+            const rHasInline = rContent.includes('![image](')
+            const rImgs = rHasInline ? '' : (r.images || []).map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
+            return `${rContent}\n\n${rImgs}`
+          }).join('\n\n')}`
           : ''
 
         return `## Tweet ${idx + 1}
@@ -942,11 +1013,13 @@ ${images}${replies}`
       const zip = new JSZip()
       selectedItems.forEach(it => {
         const dateStr = formatDateTime(it.tweet.publishedAt || it.capturedAt).replace(/[: ]/g, '_')
-        const fileName = sanitizeFileName(`${dateStr}_${it.tweet.authorHandle}_${it.tweet.id.slice(-6)}`) + '.md'
+        const baseName = it.tweet.title || `${dateStr}_${it.tweet.authorHandle}_${it.tweet.id.slice(-6)}`
+        const fileName = sanitizeFileName(baseName) + '.md'
 
         let content = it.tweet.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')
+        const hasInlineImgs = content.includes('![image](')
         const frontmatter = `---
-title: "Thread by @${it.tweet.authorHandle}"
+title: "${(it.tweet.title || `Thread by @${it.tweet.authorHandle}`).replace(/"/g, '\\"')}"
 link: ${it.tweet.url || ''}
 author: "@${it.tweet.authorHandle}"
 published: ${formatDateTime(it.tweet.publishedAt).split(' ')[0].replace(/-/g, '/')}
@@ -954,15 +1027,22 @@ created: ${formatDateTime(it.capturedAt).split(' ')[0].replace(/-/g, '/')}
 tags: []
 ---`
 
+        const imgSection = hasInlineImgs ? '' : it.tweet.images.map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
+
         const finalContent = `
 ${frontmatter}
 
 ${content}
 
-${it.tweet.images.map(img => `![image](${getHighResUrl(img)})`).join('\n\n')}
+${imgSection}
 
 ${it.replies && it.replies.length > 0 ? `
-${it.replies.map(r => `${r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')}\n\n${(r.images || []).map(img => `![image](${getHighResUrl(img)})`).join('\n\n')}`).join('\n\n')}
+${it.replies.map(r => {
+  const rContent = r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')
+  const rHasInline = rContent.includes('![image](')
+  const rImgs = rHasInline ? '' : (r.images || []).map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
+  return `${rContent}\n\n${rImgs}`
+}).join('\n\n')}
 ` : ''}
         `.trim()
 
@@ -1022,7 +1102,8 @@ ${it.replies.map(r => `${r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  
 
         const csvContent = [headers.join(','), row].join('\n')
         const dateStr = formatDateTime(it.tweet.publishedAt || it.capturedAt).replace(/[: ]/g, '_')
-        const fileName = sanitizeFileName(`${dateStr}_${it.tweet.authorHandle}_${it.tweet.id.slice(-6)}`) + '.csv'
+        const baseName = it.tweet.title || `${dateStr}_${it.tweet.authorHandle}_${it.tweet.id.slice(-6)}`
+        const fileName = sanitizeFileName(baseName) + '.csv'
         zip.file(fileName, '\uFEFF' + csvContent)
       })
 
@@ -1062,7 +1143,8 @@ ${it.replies.map(r => `${r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  
 
         const jsonStr = JSON.stringify(cleanData, null, 2)
         const dateStr = formatDateTime(it.tweet.publishedAt || it.capturedAt).replace(/[: ]/g, '_')
-        const fileName = sanitizeFileName(`${dateStr}_${it.tweet.authorHandle}_${it.tweet.id.slice(-6)}`) + '.json'
+        const baseName = it.tweet.title || `${dateStr}_${it.tweet.authorHandle}_${it.tweet.id.slice(-6)}`
+        const fileName = sanitizeFileName(baseName) + '.json'
         zip.file(fileName, jsonStr)
       })
 
@@ -1193,7 +1275,8 @@ ${it.replies.map(r => `${r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  
         for (const it of selectedItems) {
           const pdfBlob = await generatePDF([it], 'single')
           const dateStr = formatDateTime(it.tweet.publishedAt || it.capturedAt).replace(/[: ]/g, '_')
-          const fileName = sanitizeFileName(`${dateStr}_${it.tweet.authorHandle}_${it.tweet.id.slice(-6)}`) + '.pdf'
+          const baseName = it.tweet.title || `${dateStr}_${it.tweet.authorHandle}_${it.tweet.id.slice(-6)}`
+          const fileName = sanitizeFileName(baseName) + '.pdf'
           zip.file(fileName, pdfBlob)
         }
 
@@ -2245,19 +2328,22 @@ ${it.replies.map(r => `${r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  
                     </div>
                   </div>
 
-                  <ImageGrid urls={active.tweet.images} />
-
-                  <div className="text-[15px] leading-relaxed text-[var(--ui-fg)] whitespace-pre-wrap mb-4 mt-4">
-                    {active.tweet.text}
-                  </div>
+                  <TweetTextWithImages
+                    text={active.tweet.text}
+                    images={active.tweet.images}
+                    textClassName="text-[15px] text-[var(--ui-fg)] opacity-90 mb-4"
+                  />
 
                   {active.replies && active.replies.length > 0 && (
                     <div className="mt-8 pt-6 border-t border-[var(--ui-border)]">
                       <div className="space-y-6">
                         {active.replies.map((r) => (
                           <div key={r.id} className="pl-4 border-l-2 border-[var(--ui-border)]">
-                            <div className="text-sm text-[var(--ui-fg)] opacity-90 whitespace-pre-wrap">{r.text}</div>
-                            {r.images && r.images.length > 0 && <ImageGrid urls={r.images} />}
+                            <TweetTextWithImages
+                              text={r.text}
+                              images={r.images}
+                              textClassName="text-sm text-[var(--ui-fg)] opacity-90"
+                            />
                           </div>
                         ))}
                       </div>
