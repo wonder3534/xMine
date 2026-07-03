@@ -151,7 +151,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const { noteUrl, sourceUrl, requestId } = msg
     const senderTabId = (sender.tab && sender.tab.id) ? sender.tab.id : null
 
-    const TIMEOUT_MS = 15000
+    const TIMEOUT_MS = 30000
     let bgTabId = null
     let timedOut = false
 
@@ -161,7 +161,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const tab = await chrome.tabs.create({ url: noteUrl, active: false })
         bgTabId = tab.id
 
-        // 超时保护：15 秒后强制关闭后台 tab 并回传错误
+        // 超时保护：30 秒后强制关闭后台 tab 并回传错误
         const timeoutHandle = setTimeout(async () => {
           timedOut = true
           if (bgTabId !== null) {
@@ -174,7 +174,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 type: 'X_SCRAPER_NOTE_RESULT',
                 requestId,
                 ok: false,
-                error: '抓取超时（15秒），请检查网络连接后重试'
+                error: '抓取超时（30秒），请检查网络连接后重试'
               })
             } catch {}
           }
@@ -193,8 +193,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         if (timedOut) return
 
-        // 额外等待 2.5s，确保 content.js 已完全初始化并可以接收消息
-        await new Promise(r => setTimeout(r, 2500))
+        // 额外等待 1.0s，确保 content.js 已完全初始化并可以接收消息
+        await new Promise(r => setTimeout(r, 1000))
         if (timedOut) return
 
         // 向后台 tab 发送自动抓取指令，等待解析结果
@@ -256,6 +256,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               ok: true,
               isDuplicate,
               item: scrapeResult.item,
+              debugRawImages: scrapeResult.debugRawImages || []
             })
           } catch {}
         }

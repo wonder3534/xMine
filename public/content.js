@@ -1043,6 +1043,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const resolve = pendingNoteRequests.get(msg.requestId)
     if (resolve) {
       pendingNoteRequests.delete(msg.requestId)
+      if (msg.debugRawImages) {
+        console.log('xMine Background Scraped Raw Images:', msg.debugRawImages)
+      }
       resolve(msg)
     }
     return
@@ -1050,9 +1053,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // 后台静默标签页加载完成后，自动解析当前页面的推文内容
   if (type === 'X_SCRAPER_AUTO_SCRAPE') {
     ;(async () => {
-      // Step 1：等待外层 article 出现（包含 time 标签的顶层推文容器，最多 8 秒）
+      // Step 1：在后台详情页精确定位主推文容器（最高等待 8 秒）
+      const statusId = getStatusId()
       let article = null
+      
+      function isMainArticle(a, sid) {
+        if (!sid) return false
+        const links = Array.from(a.querySelectorAll('a[href]'))
+        const targetPattern = new RegExp(`/(status|article)/${sid}`, 'i')
+        return links.some(link => targetPattern.test(link.href))
+      }
+
       for (let i = 0; i < 40; i++) {
+        const arts = Array.from(document.querySelectorAll('article'))
+        
+        // 优先寻找带有当前 statusId 的主 article
+        if (statusId) {
+          article = arts.find(a => isMainArticle(a, statusId))
+        } else {
+          // 非 status 页直接使用 time 匹配
+          for (const a of arts) {
+            if (a.querySelector('time') && !(a.parentElement && a.parentElement.closest('article'))) {
+              article = a
+              break
+            }
+          }
+        }
+        
+        if (article) break
+        await sleep(200)
+      }
+
+      // 兜底逻辑：如果是 status 页且 8 秒内未找到 statusId 对应的 article，才回退到第一个带 time 的顶层 article
+      if (!article && statusId) {
         const arts = Array.from(document.querySelectorAll('article'))
         for (const a of arts) {
           if (a.querySelector('time') && !(a.parentElement && a.parentElement.closest('article'))) {
@@ -1060,11 +1093,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             break
           }
         }
-        if (article) break
-        await sleep(200)
       }
       if (!article) {
-        sendResponse({ ok: false, error: '找不到推文内容（页面加载超时）' })
+        sendResponse({ ok: false, error: '找不到主推文内容（页面加载超时）' })
         return
       }
 
@@ -1102,13 +1133,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // Step 3：展开折叠内容（如"显示更多"按钮）
       await expandArticleText(article)
 
+      // Step 3.5：循环向下滚动页面以触发懒加载图片渲染与加载，然后再回到顶部
+      try {
+        // 使用 scrollBy 逐步向下滚动，不依赖可能未完全计算的 scrollHeight
+        for (let i = 0; i < 6; i++) {
+          window.scrollBy(0, 800)
+          await sleep(300)
+        }
+        window.scrollTo(0, 0)
+        await sleep(500)
+      } catch (e) {
+        console.error('xMine: Scroll failed', e)
+      }
+
       // Step 4：解析
       const parsed = parseArticle(article)
       if (!parsed.tweet || (!parsed.tweet.text && !parsed.tweet.authorHandle)) {
         sendResponse({ ok: false, error: '无法解析推文内容' })
         return
       }
-      sendResponse({ ok: true, item: parsed })
+      const allImgsRaw = Array.from(article.querySelectorAll('img')).map(img => img.src || img.getAttribute('src') || '')
+      sendResponse({ ok: true, item: parsed, debugRawImages: allImgsRaw })
     })()
     return true
   }
@@ -1354,13 +1399,13 @@ function fetchNoteInBackground(noteUrl) {
       pendingNoteRequests.delete(requestId)
       resolve({ ok: false, error: String(e.message || e) })
     }
-    // 客户端侧超时保护（比后台 15s 略长）
+    // 客户端侧超时保护（比后台 30s 略长）
     setTimeout(() => {
       if (pendingNoteRequests.has(requestId)) {
         pendingNoteRequests.delete(requestId)
         resolve({ ok: false, error: '请求超时，请稍后重试' })
       }
-    }, 20000)
+    }, 35000)
   })
 }
 
