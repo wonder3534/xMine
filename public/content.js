@@ -574,6 +574,7 @@ function parseArticle(article) {
   let postTitle = ''
   try {
     let titleText = ''
+    let titleNode = null
 
     // 策略0：推文文本第一行以 # 开头（用户用 Markdown 标题格式书写的推文），提取整行作为标题
     if (!titleText && text) {
@@ -602,6 +603,7 @@ function parseArticle(article) {
           const t = (el.innerText || '').trim()
           if (t && t.length > 5 && !text.includes(t)) {
             titleText = t
+            titleNode = el
             break
           }
         }
@@ -638,7 +640,42 @@ function parseArticle(article) {
         if (t.length > bestLen && t.length > 8 && !text.includes(t)) {
           bestLen = t.length
           titleText = t
+          titleNode = el
         }
+      }
+    }
+
+    // --- 提取标题之上的封面图片（Cover Images） ---
+    let coverImagesMd = ''
+    const referenceNode = titleNode || textEl
+    if (referenceNode) {
+      const allImages = Array.from(article.querySelectorAll('img'))
+      const coverImages = []
+      for (const img of allImages) {
+        if (img.closest('[data-testid="User-Name"]')) continue
+        const pos = referenceNode.compareDocumentPosition(img)
+        if (pos & Node.DOCUMENT_POSITION_PRECEDING) {
+          const src = img.src || img.getAttribute('src') || img.getAttribute('data-src') || ''
+          if (src && (src.includes('twimg.com/media') || src.includes('pbs.twimg.com/media'))) {
+            let imgUrl = src
+            if (imgUrl.includes('name=')) {
+              imgUrl = imgUrl.replace(/name=(small|medium|large|orig|4096x4096|900x900|360x360|240x240)/i, 'name=large')
+            } else if (imgUrl.includes('?')) {
+              imgUrl += '&name=large'
+            } else {
+              imgUrl += '?name=large'
+            }
+            if (!coverImages.includes(imgUrl)) {
+              coverImages.push(imgUrl)
+              if (!articleInlineImages.includes(imgUrl)) {
+                articleInlineImages.push(imgUrl)
+              }
+            }
+          }
+        }
+      }
+      if (coverImages.length > 0) {
+        coverImagesMd = coverImages.map(url => `![image](${url})`).join('\n\n')
       }
     }
 
@@ -648,8 +685,14 @@ function parseArticle(article) {
       // 策略1/2 找到的外部标题才需要前置到正文；策略0的标题已在 text 首行，不重复
       const alreadyInText = text.trimStart().replace(/^#+\s*/, '').startsWith(titleText)
       if (!alreadyInText) {
-        text = `# ${titleText}\n\n${text}`.trim()
+        text = `# ${titleText}\n\n${coverImagesMd ? coverImagesMd + '\n\n' : ''}${text}`.trim()
+      } else if (coverImagesMd) {
+        const lines = text.split('\n')
+        lines.splice(1, 0, '\n' + coverImagesMd)
+        text = lines.join('\n').trim()
       }
+    } else if (coverImagesMd) {
+      text = `${coverImagesMd}\n\n${text}`.trim()
     }
   } catch (e) { /* 标题提取失败不影响正文 */ }
 
