@@ -898,8 +898,6 @@ function DashboardApp() {
       }
 
       let content = it.tweet.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')
-      // 若正文已含内联图片（X Notes 长文），不再末尾重复追加
-      const hasInlineImgs = content.includes('![image](')
 
       const frontmatter = `---
 title: "${(it.tweet.title || `Thread by @${it.tweet.authorHandle}`).replace(/"/g, '\\"')}"
@@ -910,7 +908,10 @@ created: ${formatDateTime(it.capturedAt).split(' ')[0].replace(/-/g, '/')}
 tags: [${(it.tags || []).map(t => `"${t}"`).join(', ')}]
 ---`
 
-      const imgSection = hasInlineImgs ? '' : it.tweet.images.map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
+      const imgSection = it.tweet.images
+        .filter(img => !content.includes(img))
+        .map(img => `![image](${getHighResUrl(img)})`)
+        .join('\n\n')
 
       const finalContent = `
 ${frontmatter}
@@ -922,8 +923,10 @@ ${imgSection}
 ${it.replies && it.replies.length > 0 ? `
 ${it.replies.map(r => {
   const rContent = r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')
-  const rHasInline = rContent.includes('![image](')
-  const rImgs = rHasInline ? '' : (r.images || []).map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
+  const rImgs = (r.images || [])
+    .filter(img => !rContent.includes(img))
+    .map(img => `![image](${getHighResUrl(img)})`)
+    .join('\n\n')
   return `${rContent}\n\n${rImgs}`
 }).join('\n\n')}
 ` : ''}
@@ -974,7 +977,6 @@ tags: []
 
       const tweetsContent = selectedItems.map((it, idx) => {
         const content = it.tweet.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')
-        const hasInlineImgs = content.includes('![image](')
 
         // 每条推文的元数据以普通文本格式展示
         const metadata = `**Author:** @${it.tweet.authorHandle} (${it.tweet.authorName})  
@@ -982,13 +984,18 @@ tags: []
 **Published:** ${formatDateTime(it.tweet.publishedAt).split(' ')[0]}  
 **Captured:** ${formatDateTime(it.capturedAt).split(' ')[0]}`
 
-        const images = hasInlineImgs ? '' : it.tweet.images.map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
+        const images = it.tweet.images
+          .filter(img => !content.includes(img))
+          .map(img => `![image](${getHighResUrl(img)})`)
+          .join('\n\n')
 
         const replies = it.replies && it.replies.length > 0
           ? `\n\n${it.replies.map(r => {
             const rContent = r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')
-            const rHasInline = rContent.includes('![image](')
-            const rImgs = rHasInline ? '' : (r.images || []).map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
+            const rImgs = (r.images || [])
+              .filter(img => !rContent.includes(img))
+              .map(img => `![image](${getHighResUrl(img)})`)
+              .join('\n\n')
             return `${rContent}\n\n${rImgs}`
           }).join('\n\n')}`
           : ''
@@ -1017,7 +1024,6 @@ ${images}${replies}`
         const fileName = sanitizeFileName(baseName) + '.md'
 
         let content = it.tweet.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')
-        const hasInlineImgs = content.includes('![image](')
         const frontmatter = `---
 title: "${(it.tweet.title || `Thread by @${it.tweet.authorHandle}`).replace(/"/g, '\\"')}"
 link: ${it.tweet.url || ''}
@@ -1027,7 +1033,10 @@ created: ${formatDateTime(it.capturedAt).split(' ')[0].replace(/-/g, '/')}
 tags: []
 ---`
 
-        const imgSection = hasInlineImgs ? '' : it.tweet.images.map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
+        const imgSection = it.tweet.images
+          .filter(img => !content.includes(img))
+          .map(img => `![image](${getHighResUrl(img)})`)
+          .join('\n\n')
 
         const finalContent = `
 ${frontmatter}
@@ -1039,8 +1048,10 @@ ${imgSection}
 ${it.replies && it.replies.length > 0 ? `
 ${it.replies.map(r => {
   const rContent = r.text.replace(/@(\w+)/g, '[[@$1]]').replace(/\n/g, '  \n')
-  const rHasInline = rContent.includes('![image](')
-  const rImgs = rHasInline ? '' : (r.images || []).map(img => `![image](${getHighResUrl(img)})`).join('\n\n')
+  const rImgs = (r.images || [])
+    .filter(img => !rContent.includes(img))
+    .map(img => `![image](${getHighResUrl(img)})`)
+    .join('\n\n')
   return `${rContent}\n\n${rImgs}`
 }).join('\n\n')}
 ` : ''}
