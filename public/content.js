@@ -553,8 +553,21 @@ function parseArticle(article) {
   const nameEl = article.querySelector('[data-testid="User-Name"]')
   const nameText = (nameEl && nameEl.textContent) ? nameEl.textContent.trim() : ''
   const parts = nameText.split('@')
-  const authorName = (parts[0] || 'Unknown').trim()
-  const authorHandle = parts.length > 1 ? `@${parts[1].trim()}` : ''
+  let authorName = (parts[0] || 'Unknown').trim()
+  let authorHandle = parts.length > 1 ? `@${parts[1].trim()}` : ''
+
+  // Fallback for X Articles page where User-Name might not exist in the same format
+  if ((!authorHandle || authorName === 'Unknown') && location.pathname.includes('/article/')) {
+    // Look for profile links
+    const profileLink = article.querySelector('a[href^="/"][role="link"]') || document.querySelector('article a[href^="/"]')
+    if (profileLink) {
+      const handle = profileLink.getAttribute('href').replace('/', '')
+      if (handle && !['home', 'explore', 'notifications', 'messages', 'i', 'settings'].includes(handle)) {
+        authorHandle = `@${handle}`
+        authorName = profileLink.textContent.trim() || handle
+      }
+    }
+  }
 
   const avatarImg = article.querySelector('img[src*="profile_images"], img[alt*="头像"], img[alt*="Avatar"]')
   const authorAvatar = avatarImg && avatarImg.src ? avatarImg.src : ''
@@ -573,7 +586,7 @@ function parseArticle(article) {
     '[data-testid="articleContent"]', // 其他可能的容器
   ]
   for (const sel of noteSelectors) {
-    const el = article.querySelector(sel)
+    const el = (article.matches && article.matches(sel)) ? article : article.querySelector(sel)
     if (el && el !== textEl) {
       const noteText = htmlToMarkdown(el, articleInlineImages)
       if (noteText.length > text.length) {
@@ -790,7 +803,7 @@ function parseArticle(article) {
   const uniqueLinks = [...new Set(collectedLinks)]
   const linksToAppend = uniqueLinks.filter((link) => !text.includes(link))
   if (linksToAppend.length > 0) {
-    text = text ? `${text}\n${linksToAppend.join('\n')}` : linksToAppend.join('\n')
+    text = text ? `${text}\n\n${linksToAppend.join('\n')}` : linksToAppend.join('\n')
   }
   // --- 链接提取结束 ---
 
@@ -798,8 +811,11 @@ function parseArticle(article) {
   const datetime = timeEl ? (timeEl.getAttribute('datetime') || '') : ''
   const publishedAt = datetime || ''
 
-  const linkEl = article.querySelector('a[href*="/status/"]')
-  const url = linkEl && linkEl.href ? linkEl.href : ''
+  const linkEl = article.querySelector('a[href*="/status/"]') || article.querySelector('a[href*="/article/"]')
+  let url = linkEl && linkEl.href ? linkEl.href : ''
+  if (!url && location.pathname.includes('/article/')) {
+    url = location.href
+  }
 
   // --- 图片收集：优先使用内联顺序（X Notes 内容），否则按 DOM 顺序收集 ---
   const images = []
@@ -821,12 +837,24 @@ function parseArticle(article) {
   if (articleInlineImages.length > 0) {
     // X Notes / 长文：内联图片已按内容顺序收集
     articleInlineImages.forEach(u => { if (!images.includes(u)) images.push(u) })
-    // 补充 DOM 中可能漏掉的图片（不重复）
-    article.querySelectorAll('img').forEach(img => normalizeAndAdd(img.src))
-  } else {
-    // 普通推文：按 DOM 顺序收集媒体图片
-    article.querySelectorAll('img').forEach(img => normalizeAndAdd(img.src))
   }
+  
+  // 补充 DOM 中可能漏掉的图片（不重复），使用更强健的方式提取
+  article.querySelectorAll('img').forEach(img => {
+    normalizeAndAdd(img.src || img.getAttribute('src') || img.getAttribute('data-src'))
+  })
+  // 检查背景图片
+  article.querySelectorAll('div, span, a').forEach(el => {
+    const bg = el.style.backgroundImage || getComputedStyle(el).backgroundImage
+    if (bg && (bg.includes('twimg.com/media') || bg.includes('pbs.twimg.com/media'))) {
+      const m = bg.match(/url\(['"]?(.*?)['"]?\)/)
+      if (m && m[1]) normalizeAndAdd(m[1])
+    }
+  })
+  // 兜底正则提取 HTML 里的所有图片链接
+  const mediaRegex = /https?:\/\/(?:pbs\.)?twimg\.com\/media\/[^"'\s\)]+/g
+  const matches = article.innerHTML.match(mediaRegex) || []
+  matches.forEach(m => normalizeAndAdd(m))
 
   // id 生成优先级：推文 URL > 时间+作者 > 作者+文字摘要
   // 注意：即使 text 为空（纯图推文），也要保证 id 不为空
@@ -895,6 +923,13 @@ function parseArticle(article) {
   // Views: often in an anchor with href containing /analytics
   const viewCount = getCount('a[href*="/analytics"]', ['[data-testid="app-text-transition-container"]'])
 
+  // 最终合并：如果抓取到了图片，但正文中没有，则追加到 Markdown 正文末尾
+  const missingImgs = images.filter(url => !text.includes(url))
+  if (missingImgs.length > 0) {
+    const mdImgs = missingImgs.map(url => `![image](${url})`).join('\n\n')
+    text = text ? `${text}\n\n${mdImgs}` : mdImgs
+  }
+
   return {
     tweet: {
       id,
@@ -920,8 +955,8 @@ function isStatusPage() {
 }
 
 function getStatusId() {
-  const m = location.pathname.match(/\/status\/(\d+)/)
-  return m ? m[1] : ''
+  const m = location.pathname.match(/\/(status|article)\/(\d+)/)
+  return m ? m[2] : ''
 }
 
 function findMainStatusArticle(selected) {
@@ -1055,6 +1090,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     ;(async () => {
       // Step 1：在后台详情页精确定位主推文容器（最高等待 8 秒）
       const statusId = getStatusId()
+      const isArticlePage = location.pathname.includes('/article/')
       let article = null
       
       function isMainArticle(a, sid) {
@@ -1067,8 +1103,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       for (let i = 0; i < 40; i++) {
         const arts = Array.from(document.querySelectorAll('article'))
         
-        // 优先寻找带有当前 statusId 的主 article
-        if (statusId) {
+        if (isArticlePage) {
+          article = document.querySelector('[data-testid="article"]') || arts[0]
+        } else if (statusId) {
           article = arts.find(a => isMainArticle(a, statusId))
         } else {
           // 非 status 页直接使用 time 匹配
@@ -1084,13 +1121,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await sleep(200)
       }
 
-      // 兜底逻辑：如果是 status 页且 8 秒内未找到 statusId 对应的 article，才回退到第一个带 time 的顶层 article
-      if (!article && statusId) {
+      // 兜底逻辑：如果未找到，且是 status 页或文章页
+      if (!article) {
         const arts = Array.from(document.querySelectorAll('article'))
-        for (const a of arts) {
-          if (a.querySelector('time') && !(a.parentElement && a.parentElement.closest('article'))) {
-            article = a
-            break
+        if (isArticlePage) {
+          article = document.querySelector('[data-testid="article"]') || arts[0]
+        } else if (statusId) {
+          for (const a of arts) {
+            if (a.querySelector('time') && !(a.parentElement && a.parentElement.closest('article'))) {
+              article = a
+              break
+            }
           }
         }
       }
@@ -1347,14 +1388,18 @@ function showNotification(message, type = 'success') {
 
 // 检测 article 内是否有 X Notes 长文卡片，并返回其完整 URL（否则返回 null）
 function getXNotesCardUrl(article) {
-  // Strategy 1: 普通链接预览卡片（card.wrapper），其链接指向 Notes 状态页
-  const card = article.querySelector('[data-testid="card.wrapper"]')
-  if (card) {
-    const links = Array.from(card.querySelectorAll('a[href]'))
-    for (const link of links) {
-      const href = link.href || ''
-      const m = href.match(/https?:\/\/(x|twitter)\.com\/[^/?#]+\/status\/\d+/)
-      if (m) return m[0]
+  // 提取推文内所有链接，寻找指向 status 详情页或 i/article 页的链接
+  const links = Array.from(article.querySelectorAll('a[href]'))
+  for (const link of links) {
+    const href = link.href || ''
+    // 匹配 status 或 i/article
+    const m = href.match(/https?:\/\/(x|twitter)\.com\/(?:[^/?#]+\/status\/\d+|i\/article\/\d+)/)
+    if (m) {
+      const isArticleLink = href.includes('/i/article/')
+      const isCardLink = link.closest('[data-testid="card.wrapper"]') !== null
+      if (isArticleLink || isCardLink) {
+        return m[0]
+      }
     }
   }
 
@@ -1365,13 +1410,14 @@ function getXNotesCardUrl(article) {
     const timeEl = article.querySelector('time')
     const timeLink = timeEl && timeEl.closest('a[href*="/status/"]')
     if (timeLink && timeLink.href) {
-      const m = timeLink.href.match(/https?:\/\/(x|twitter)\.com\/[^/?#]+\/status\/\d+/)
+      const m = timeLink.href.match(/https?:\/\/(x|twitter)\.com\/(?:[^/?#]+\/status\/\d+|i\/article\/\d+)/)
       if (m) return m[0]
     }
-    // 兜底：文章内第一个 /status/ 链接
-    const statusLink = article.querySelector('a[href*="/status/"]')
-    if (statusLink && statusLink.href) {
-      const m = statusLink.href.match(/https?:\/\/(x|twitter)\.com\/[^/?#]+\/status\/\d+/)
+    // 兜底：文章内第一个 /status/ 或 /article/ 链接
+    const links = Array.from(article.querySelectorAll('a[href]'))
+    for (const link of links) {
+      const href = link.href || ''
+      const m = href.match(/https?:\/\/(x|twitter)\.com\/(?:[^/?#]+\/status\/\d+|i\/article\/\d+)/)
       if (m) return m[0]
     }
   }
