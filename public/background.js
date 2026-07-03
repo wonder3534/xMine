@@ -147,6 +147,139 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true
   }
 
+  if (type === 'X_SCRAPER_FETCH_NOTE') {
+    const { noteUrl, sourceUrl, requestId } = msg
+    const senderTabId = (sender.tab && sender.tab.id) ? sender.tab.id : null
+
+    const TIMEOUT_MS = 15000
+    let bgTabId = null
+    let timedOut = false
+
+    ;(async () => {
+      try {
+        // 后台静默打开目标 tab，不夺取焦点
+        const tab = await chrome.tabs.create({ url: noteUrl, active: false })
+        bgTabId = tab.id
+
+        // 超时保护：15 秒后强制关闭后台 tab 并回传错误
+        const timeoutHandle = setTimeout(async () => {
+          timedOut = true
+          if (bgTabId !== null) {
+            try { await chrome.tabs.remove(bgTabId) } catch {}
+            bgTabId = null
+          }
+          if (senderTabId) {
+            try {
+              chrome.tabs.sendMessage(senderTabId, {
+                type: 'X_SCRAPER_NOTE_RESULT',
+                requestId,
+                ok: false,
+                error: '抓取超时（15秒），请检查网络连接后重试'
+              })
+            } catch {}
+          }
+        }, TIMEOUT_MS)
+
+        // 等待 tab 加载完成（status === 'complete'）
+        await new Promise((resolve) => {
+          function onUpdated(tabId, changeInfo) {
+            if (tabId === bgTabId && changeInfo.status === 'complete') {
+              chrome.tabs.onUpdated.removeListener(onUpdated)
+              resolve()
+            }
+          }
+          chrome.tabs.onUpdated.addListener(onUpdated)
+        })
+
+        if (timedOut) return
+
+        // 额外等待 1.5s，确保 content.js 已完全初始化并可以接收消息
+        await new Promise(r => setTimeout(r, 1500))
+        if (timedOut) return
+
+        // 向后台 tab 发送自动抓取指令，等待解析结果
+        const scrapeResult = await new Promise((resolve) => {
+          try {
+            chrome.tabs.sendMessage(bgTabId, { type: 'X_SCRAPER_AUTO_SCRAPE' }, (response) => {
+              if (chrome.runtime.lastError) {
+                resolve({ ok: false, error: chrome.runtime.lastError.message })
+              } else {
+                resolve(response || { ok: false, error: '内容脚本无响应' })
+              }
+            })
+          } catch (e) {
+            resolve({ ok: false, error: String(e.message || e) })
+          }
+        })
+
+        clearTimeout(timeoutHandle)
+        if (timedOut) return
+
+        // 关闭后台 tab
+        if (bgTabId !== null) {
+          try { await chrome.tabs.remove(bgTabId) } catch {}
+          bgTabId = null
+        }
+
+        if (!scrapeResult.ok || !scrapeResult.item) {
+          throw new Error(scrapeResult.error || '内容解析失败')
+        }
+
+        // 去重检查并保存
+        const existing = await getItems()
+        const next = existing.slice()
+        const incomingTweet = scrapeResult.item.tweet
+        const isDuplicate = next.some(x =>
+          (incomingTweet.url && x.tweet && x.tweet.url === incomingTweet.url) ||
+          (incomingTweet.id && x.tweet && x.tweet.id === incomingTweet.id)
+        )
+
+        if (!isDuplicate) {
+          const newItem = {
+            id: createId('item'),
+            sourceUrl: sourceUrl || noteUrl,
+            capturedAt: new Date().toISOString(),
+            tweet: incomingTweet,
+            replies: Array.isArray(scrapeResult.item.replies) ? scrapeResult.item.replies : [],
+          }
+          next.unshift(newItem)
+          await setItems(next)
+          safeRuntimeBroadcast({ type: 'X_SCRAPER_ITEMS_UPDATED' })
+        }
+
+        // 通知发起方 tab 成功
+        if (senderTabId) {
+          try {
+            chrome.tabs.sendMessage(senderTabId, {
+              type: 'X_SCRAPER_NOTE_RESULT',
+              requestId,
+              ok: true,
+              isDuplicate,
+            })
+          } catch {}
+        }
+
+      } catch (e) {
+        if (bgTabId !== null) {
+          try { await chrome.tabs.remove(bgTabId) } catch {}
+        }
+        if (senderTabId && !timedOut) {
+          try {
+            chrome.tabs.sendMessage(senderTabId, {
+              type: 'X_SCRAPER_NOTE_RESULT',
+              requestId,
+              ok: false,
+              error: String(e.message || e),
+            })
+          } catch {}
+        }
+      }
+    })()
+
+    sendResponse({ ok: true, queued: true })
+    return true
+  }
+
   return false
 })
 

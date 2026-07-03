@@ -1007,6 +1007,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch(() => sendResponse({ ok: true, items: [], sourceUrl: location.href }))
     return true
   }
+  // 收到后台 tab 抓取结果，分发给对应 pending promise
+  if (type === 'X_SCRAPER_NOTE_RESULT') {
+    const resolve = pendingNoteRequests.get(msg.requestId)
+    if (resolve) {
+      pendingNoteRequests.delete(msg.requestId)
+      resolve(msg)
+    }
+    return
+  }
+  // 后台静默标签页加载完成后，自动解析当前页面的推文内容
+  if (type === 'X_SCRAPER_AUTO_SCRAPE') {
+    ;(async () => {
+      let article = null
+      for (let i = 0; i < 40; i++) {
+        const arts = Array.from(document.querySelectorAll('article'))
+        for (const a of arts) {
+          if (a.querySelector('time') && !(a.parentElement && a.parentElement.closest('article'))) {
+            article = a
+            break
+          }
+        }
+        if (article) break
+        await sleep(200)
+      }
+      if (!article) {
+        sendResponse({ ok: false, error: '找不到推文内容（页面加载超时）' })
+        return
+      }
+      await expandArticleText(article)
+      const parsed = parseArticle(article)
+      if (!parsed.tweet || (!parsed.tweet.text && !parsed.tweet.authorHandle)) {
+        sendResponse({ ok: false, error: '无法解析推文内容' })
+        return
+      }
+      sendResponse({ ok: true, item: parsed })
+    })()
+    return true
+  }
 })
 
 // Add styles for the quick mine button
@@ -1041,6 +1079,42 @@ const quickMineStyle = `
 }
 `
 styleEl.textContent += quickMineStyle
+
+// Toast 通知样式（用于 X Notes 后台抓取反馈）
+const xmineToastStyle = `
+.xmine-toast {
+  position: fixed;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  padding: 10px 22px;
+  border-radius: 99px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  z-index: 2147483647;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  pointer-events: none;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.xmine-toast.xmine-toast-show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+.xmine-toast.xmine-toast-success {
+  background: rgba(10, 10, 10, 0.95);
+  color: #4ade80;
+  border: 1px solid rgba(74, 222, 128, 0.3);
+}
+.xmine-toast.xmine-toast-error {
+  background: rgba(10, 10, 10, 0.95);
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.3);
+}
+`
+styleEl.textContent += xmineToastStyle
 
 // ... existing code ...
 
@@ -1143,6 +1217,63 @@ async function captureThreadToTarget(targetArticle) {
   return [parsedMain]
 }
 
+// 在页面上显示一个短暂的 toast 通知
+function showNotification(message, type = 'success') {
+  const existing = document.querySelector('.xmine-toast')
+  if (existing) existing.remove()
+  const toast = document.createElement('div')
+  toast.className = `xmine-toast xmine-toast-${type}`
+  toast.textContent = type === 'success' ? `✓ ${message}` : `✕ ${message}`
+  document.documentElement.appendChild(toast)
+  requestAnimationFrame(() => requestAnimationFrame(() => toast.classList.add('xmine-toast-show')))
+  setTimeout(() => {
+    toast.classList.remove('xmine-toast-show')
+    setTimeout(() => toast.remove(), 300)
+  }, 3000)
+}
+
+// 检测 article 内是否有 X Notes 长文卡片，并返回其完整 URL（否则返回 null）
+function getXNotesCardUrl(article) {
+  const card = article.querySelector('[data-testid="card.wrapper"]')
+  if (!card) return null
+  const links = Array.from(card.querySelectorAll('a[href]'))
+  for (const link of links) {
+    const href = link.href || ''
+    const m = href.match(/https?:\/\/(x|twitter)\.com\/[^/?#]+\/status\/\d+/)
+    if (m) return m[0]
+  }
+  return null
+}
+
+// 待回调的后台抓取请求 Map（requestId → resolve）
+const pendingNoteRequests = new Map()
+
+// 向 background.js 发起后台静默标签页抓取，返回 Promise<{ ok, error? }>
+function fetchNoteInBackground(noteUrl) {
+  return new Promise((resolve) => {
+    const requestId = `xmine_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    pendingNoteRequests.set(requestId, resolve)
+    try {
+      chrome.runtime.sendMessage({
+        type: 'X_SCRAPER_FETCH_NOTE',
+        noteUrl,
+        sourceUrl: location.href,
+        requestId,
+      })
+    } catch (e) {
+      pendingNoteRequests.delete(requestId)
+      resolve({ ok: false, error: String(e.message || e) })
+    }
+    // 客户端侧超时保护（比后台 15s 略长）
+    setTimeout(() => {
+      if (pendingNoteRequests.has(requestId)) {
+        pendingNoteRequests.delete(requestId)
+        resolve({ ok: false, error: '请求超时，请稍后重试' })
+      }
+    }, 20000)
+  })
+}
+
 async function handleQuickMine(article, btn) {
   if (btn.classList.contains('saved')) return
 
@@ -1158,6 +1289,30 @@ async function handleQuickMine(article, btn) {
     s.id = 'xmine-spin-style'
     s.textContent = `@keyframes xmine-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } } .animate-spin { animation: xmine-spin 1s linear infinite; }`
     document.head.appendChild(s)
+  }
+
+  // X Notes / 长文卡片：通过后台静默标签页获取完整内容
+  const notesUrl = getXNotesCardUrl(article)
+  if (notesUrl && !isStatusPage()) {
+    const result = await fetchNoteInBackground(notesUrl)
+    if (result.ok) {
+      btn.classList.add('saved')
+      btn.innerHTML = `
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      `
+      showNotification('已保存', 'success')
+      setTimeout(() => {
+        btn.classList.remove('saved', 'saving')
+        btn.innerHTML = PICKAXE_ICON
+      }, 2000)
+    } else {
+      btn.classList.remove('saving')
+      btn.innerHTML = originalIcon
+      showNotification(`抓取失败：${result.error || '未知错误'}`, 'error')
+    }
+    return
   }
 
   let itemsToSave = []
