@@ -1019,6 +1019,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // 后台静默标签页加载完成后，自动解析当前页面的推文内容
   if (type === 'X_SCRAPER_AUTO_SCRAPE') {
     ;(async () => {
+      // Step 1：等待外层 article 出现（包含 time 标签的顶层推文容器，最多 8 秒）
       let article = null
       for (let i = 0; i < 40; i++) {
         const arts = Array.from(document.querySelectorAll('article'))
@@ -1035,7 +1036,42 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, error: '找不到推文内容（页面加载超时）' })
         return
       }
+
+      // Step 2：等待 X Notes 正文内容加载完毕并稳定（最多再等 10 秒）
+      // X Notes 文章内容是异步渲染的，需要轮询等待 [data-testid="article"] 内容稳定
+      const noteContentSelectors = [
+        '[data-testid="article"]',
+        'div[data-contents="true"]',
+        '[data-testid="tweetText"]',
+      ]
+      let prevLen = -1
+      let stableCount = 0
+      for (let i = 0; i < 50; i++) {
+        let curLen = 0
+        for (const sel of noteContentSelectors) {
+          const el = article.querySelector(sel)
+          if (el) {
+            const len = (el.innerText || '').length
+            if (len > curLen) curLen = len
+          }
+        }
+        // 内容超过 100 字符后，等待连续 3 次（600ms）不再增长才认为稳定
+        if (curLen > 100) {
+          if (curLen === prevLen) {
+            stableCount++
+            if (stableCount >= 3) break
+          } else {
+            stableCount = 0
+          }
+        }
+        prevLen = curLen
+        await sleep(200)
+      }
+
+      // Step 3：展开折叠内容（如"显示更多"按钮）
       await expandArticleText(article)
+
+      // Step 4：解析
       const parsed = parseArticle(article)
       if (!parsed.tweet || (!parsed.tweet.text && !parsed.tweet.authorHandle)) {
         sendResponse({ ok: false, error: '无法解析推文内容' })
@@ -1045,6 +1081,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })()
     return true
   }
+
 })
 
 // Add styles for the quick mine button

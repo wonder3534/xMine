@@ -193,8 +193,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         if (timedOut) return
 
-        // 额外等待 1.5s，确保 content.js 已完全初始化并可以接收消息
-        await new Promise(r => setTimeout(r, 1500))
+        // 额外等待 2.5s，确保 content.js 已完全初始化并可以接收消息
+        await new Promise(r => setTimeout(r, 2500))
         if (timedOut) return
 
         // 向后台 tab 发送自动抓取指令，等待解析结果
