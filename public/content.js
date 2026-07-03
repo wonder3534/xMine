@@ -1271,16 +1271,38 @@ function showNotification(message, type = 'success') {
 
 // 检测 article 内是否有 X Notes 长文卡片，并返回其完整 URL（否则返回 null）
 function getXNotesCardUrl(article) {
+  // Strategy 1: 普通链接预览卡片（card.wrapper），其链接指向 Notes 状态页
   const card = article.querySelector('[data-testid="card.wrapper"]')
-  if (!card) return null
-  const links = Array.from(card.querySelectorAll('a[href]'))
-  for (const link of links) {
-    const href = link.href || ''
-    const m = href.match(/https?:\/\/(x|twitter)\.com\/[^/?#]+\/status\/\d+/)
-    if (m) return m[0]
+  if (card) {
+    const links = Array.from(card.querySelectorAll('a[href]'))
+    for (const link of links) {
+      const href = link.href || ''
+      const m = href.match(/https?:\/\/(x|twitter)\.com\/[^/?#]+\/status\/\d+/)
+      if (m) return m[0]
+    }
   }
+
+  // Strategy 2: X Notes 文章推文 — feed 中以 [data-testid="article-cover-image"] 标识
+  // 此类推文本身即为 Notes 长文，其推文状态页就是文章全文页
+  if (article.querySelector('[data-testid="article-cover-image"]')) {
+    // 优先从 time 元素的父级 <a> 获取推文自身的 status URL（最可靠）
+    const timeEl = article.querySelector('time')
+    const timeLink = timeEl && timeEl.closest('a[href*="/status/"]')
+    if (timeLink && timeLink.href) {
+      const m = timeLink.href.match(/https?:\/\/(x|twitter)\.com\/[^/?#]+\/status\/\d+/)
+      if (m) return m[0]
+    }
+    // 兜底：文章内第一个 /status/ 链接
+    const statusLink = article.querySelector('a[href*="/status/"]')
+    if (statusLink && statusLink.href) {
+      const m = statusLink.href.match(/https?:\/\/(x|twitter)\.com\/[^/?#]+\/status\/\d+/)
+      if (m) return m[0]
+    }
+  }
+
   return null
 }
+
 
 // 待回调的后台抓取请求 Map（requestId → resolve）
 const pendingNoteRequests = new Map()
