@@ -255,6 +255,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               requestId,
               ok: true,
               isDuplicate,
+              item: scrapeResult.item,
             })
           } catch {}
         }

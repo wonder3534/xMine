@@ -171,23 +171,39 @@ function clearSelectionUI() {
 }
 
 async function confirmCapture() {
-  const items = await getSelectedItems()
-  if (!items || items.length === 0) {
-    hideConfirm()
-    return
+  const confirmBtn = document.getElementById('xScraperConfirm')
+  const originalText = confirmBtn ? confirmBtn.textContent : '确认抓取'
+  if (confirmBtn) {
+    confirmBtn.disabled = true
+    confirmBtn.textContent = '抓取中...'
   }
-  await new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage(
-        { type: 'X_SCRAPER_SAVE_ITEMS', items, sourceUrl: location.href },
-        () => resolve(undefined),
-      )
-    } catch {
-      resolve(undefined)
+  try {
+    const items = await getSelectedItems()
+    if (!items || items.length === 0) {
+      hideConfirm()
+      return
     }
-  })
-  hideConfirm()
-  clearSelectionUI()
+    await new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(
+          { type: 'X_SCRAPER_SAVE_ITEMS', items, sourceUrl: location.href },
+          () => resolve(undefined),
+        )
+      } catch {
+        resolve(undefined)
+      }
+    })
+    showNotification('多选抓取成功', 'success')
+  } catch (e) {
+    showNotification(`抓取失败: ${e.message || e}`, 'error')
+  } finally {
+    if (confirmBtn) {
+      confirmBtn.disabled = false
+      confirmBtn.textContent = originalText
+    }
+    hideConfirm()
+    clearSelectionUI()
+  }
 }
 
 document.getElementById('xScraperCancel')?.addEventListener('click', (e) => {
@@ -992,7 +1008,22 @@ async function getSelectedItems() {
   }
 
   // 只要有作者信息就保留（纯图推文可能没有文字）
-  return articles.map((a) => parseArticle(a)).filter((i) => i.tweet && (i.tweet.text || i.tweet.authorHandle || (i.tweet.images && i.tweet.images.length > 0)))
+  const results = []
+  for (const a of articles) {
+    const notesUrl = getXNotesCardUrl(a)
+    if (notesUrl) {
+      const result = await fetchNoteInBackground(notesUrl)
+      if (result.ok && result.item) {
+        results.push(result.item)
+      } else {
+        showNotification(`抓取长文失败：${result.error || '未知错误'}`, 'error')
+        results.push(parseArticle(a))
+      }
+    } else {
+      results.push(parseArticle(a))
+    }
+  }
+  return results.filter((i) => i.tweet && (i.tweet.text || i.tweet.authorHandle || (i.tweet.images && i.tweet.images.length > 0)))
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
