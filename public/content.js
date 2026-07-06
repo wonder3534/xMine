@@ -232,6 +232,29 @@ function getArticleFromEventTarget(target) {
   return target.closest('article')
 }
 
+function getRealImageUrl(img) {
+  if (!img) return ''
+  
+  // 优先读取响应式图片集和常见懒加载属性
+  const attrs = ['srcset', 'data-srcset', 'data-src', 'data-image-url', 'src']
+  for (const attr of attrs) {
+    const val = img.getAttribute(attr) || img[attr]
+    if (val && val.includes('twimg.com')) {
+      if (attr === 'srcset' || attr === 'data-srcset') {
+        // 解析 srcset（例如 "url1 1x, url2 2x"），取分辨率最高（最后面）的那个 URL
+        const parts = val.split(',')
+        if (parts.length > 0) {
+          const urlPart = parts[parts.length - 1].trim().split(/\s+/)[0]
+          if (urlPart) return urlPart
+        }
+      } else {
+        return val
+      }
+    }
+  }
+  return img.src || ''
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -259,7 +282,10 @@ function htmlToMarkdown(el, inlineImages) {
   }
 
   function isTweetMedia(src) {
-    return src && (src.includes('twimg.com/media') || src.includes('pbs.twimg.com/media'))
+    if (!src) return false
+    if (!src.includes('twimg.com')) return false
+    if (src.includes('/profile_images/') || src.includes('/emoji/')) return false
+    return true
   }
 
   function processNode(node) {
@@ -270,15 +296,19 @@ function htmlToMarkdown(el, inlineImages) {
     const tag = (node.tagName || '').toLowerCase()
     // 跳过图标、按钮、SVG 等非内容元素（img 移至 switch 单独处理）
     if (['svg', 'button', 'script', 'style'].includes(tag)) return ''
-    // 跳过操作栏区域
-    if (node.closest('[role="group"]') || node.closest('[data-testid="reply"]')) return ''
+    // 跳过操作栏区域、作者姓名、头像及插件快捷按钮
+    if (node.closest('[role="group"]') || 
+        node.closest('[data-testid="reply"]') || 
+        node.closest('[data-testid="User-Name"]') || 
+        node.closest('[data-testid="UserAvatar-Container-UNKNOWN"]') ||
+        node.closest('.xmine-quick-btn')) return ''
 
     const children = Array.from(node.childNodes).map(processNode).join('')
 
     switch (tag) {
       // --- 媒体图片：按出现顺序嵌入 Markdown ---
       case 'img': {
-        const src = node.src || node.getAttribute('src') || node.getAttribute('data-src') || ''
+        const src = getRealImageUrl(node)
         if (!isTweetMedia(src)) return ''
         const imgUrl = normalizeMediaUrl(src)
         if (inlineImages && !inlineImages.includes(imgUrl)) inlineImages.push(imgUrl)
@@ -684,8 +714,8 @@ function parseArticle(article) {
         if (img.closest('[data-testid="User-Name"]')) continue
         const pos = referenceNode.compareDocumentPosition(img)
         if (pos & Node.DOCUMENT_POSITION_PRECEDING) {
-          const src = img.src || img.getAttribute('src') || img.getAttribute('data-src') || ''
-          if (src && (src.includes('twimg.com/media') || src.includes('pbs.twimg.com/media'))) {
+          const src = getRealImageUrl(img)
+          if (src && src.includes('twimg.com') && !src.includes('/profile_images/') && !src.includes('/emoji/')) {
             let imgUrl = src
             if (imgUrl.includes('name=')) {
               imgUrl = imgUrl.replace(/name=(small|medium|large|orig|4096x4096|900x900|360x360|240x240)/i, 'name=large')
@@ -822,7 +852,8 @@ function parseArticle(article) {
 
   function normalizeAndAdd(src) {
     if (!src) return
-    if (!src.includes('twimg.com/media') && !src.includes('pbs.twimg.com/media')) return
+    if (!src.includes('twimg.com')) return
+    if (src.includes('/profile_images/') || src.includes('/emoji/')) return
     let imgUrl = src
     if (imgUrl.includes('name=')) {
       imgUrl = imgUrl.replace(/name=(small|medium|large|orig|4096x4096|900x900|360x360|240x240)/i, 'name=large')
@@ -841,18 +872,18 @@ function parseArticle(article) {
   
   // 补充 DOM 中可能漏掉的图片（不重复），使用更强健的方式提取
   article.querySelectorAll('img').forEach(img => {
-    normalizeAndAdd(img.src || img.getAttribute('src') || img.getAttribute('data-src'))
+    normalizeAndAdd(getRealImageUrl(img))
   })
   // 检查背景图片
   article.querySelectorAll('div, span, a').forEach(el => {
     const bg = el.style.backgroundImage || getComputedStyle(el).backgroundImage
-    if (bg && (bg.includes('twimg.com/media') || bg.includes('pbs.twimg.com/media'))) {
+    if (bg && bg.includes('twimg.com') && !bg.includes('/profile_images/') && !bg.includes('/emoji/')) {
       const m = bg.match(/url\(['"]?(.*?)['"]?\)/)
       if (m && m[1]) normalizeAndAdd(m[1])
     }
   })
-  // 兜底正则提取 HTML 里的所有图片链接
-  const mediaRegex = /https?:\/\/(?:pbs\.)?twimg\.com\/media\/[^"'\s\)]+/g
+  // 兜底正则提取 HTML 里的所有图片链接，使用负向先行排除头像和表情
+  const mediaRegex = /https?:\/\/(?:[a-zA-Z0-9_-]+\.)?twimg\.com\/(?!profile_images|emoji)[a-zA-Z0-9_-]+\/[^"'\s\)]+/g
   const matches = article.innerHTML.match(mediaRegex) || []
   matches.forEach(m => normalizeAndAdd(m))
 
@@ -997,6 +1028,28 @@ async function collectRepliesForStatus(mainArticle) {
   return replies
 }
 
+async function parseArticleOrFetchNote(articleElement) {
+  // 如果当前已经是长文页面，则直接解析，避免重复/循环抓取
+  if (location.pathname.includes('/article/')) {
+    return parseArticle(articleElement)
+  }
+
+  const notesUrl = getXNotesCardUrl(articleElement)
+  if (notesUrl) {
+    // 如果卡片链接就是当前页面，也直接解析
+    if (isSamePage(notesUrl, location.href)) {
+      return parseArticle(articleElement)
+    }
+    const result = await fetchNoteInBackground(notesUrl)
+    if (result.ok && result.item) {
+      return result.item
+    } else {
+      showNotification(`抓取长文失败：${result.error || '未知错误'}`, 'error')
+    }
+  }
+  return parseArticle(articleElement)
+}
+
 async function getSelectedItems() {
   const articles = Array.from(selectedArticles).sort((a, b) => {
     return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
@@ -1011,7 +1064,7 @@ async function getSelectedItems() {
     const main = findMainStatusArticle(articles)
     if (!main) return []
     await expandArticleText(main)
-    const parsedMain = parseArticle(main)
+    const parsedMain = await parseArticleOrFetchNote(main)
     // 只要有作者信息就视为有效（纯图推文可能没有文字）
     if (!parsedMain.tweet || (!parsedMain.tweet.text && !parsedMain.tweet.authorHandle && parsedMain.tweet.images.length === 0)) return []
 
@@ -1020,7 +1073,7 @@ async function getSelectedItems() {
       const replies = []
       for (const art of others) {
         await expandArticleText(art)
-        const parsed = parseArticle(art)
+        const parsed = await parseArticleOrFetchNote(art)
         if (!parsed.tweet.text) continue
         replies.push({
           id: parsed.tweet.id,
@@ -1045,18 +1098,7 @@ async function getSelectedItems() {
   // 只要有作者信息就保留（纯图推文可能没有文字）
   const results = []
   for (const a of articles) {
-    const notesUrl = getXNotesCardUrl(a)
-    if (notesUrl) {
-      const result = await fetchNoteInBackground(notesUrl)
-      if (result.ok && result.item) {
-        results.push(result.item)
-      } else {
-        showNotification(`抓取长文失败：${result.error || '未知错误'}`, 'error')
-        results.push(parseArticle(a))
-      }
-    } else {
-      results.push(parseArticle(a))
-    }
+    results.push(await parseArticleOrFetchNote(a))
   }
   return results.filter((i) => i.tweet && (i.tweet.text || i.tweet.authorHandle || (i.tweet.images && i.tweet.images.length > 0)))
 }
@@ -1152,7 +1194,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       for (let i = 0; i < 50; i++) {
         let curLen = 0
         for (const sel of noteContentSelectors) {
-          const el = article.querySelector(sel)
+          const el = (article.matches && article.matches(sel)) ? article : article.querySelector(sel)
           if (el) {
             const len = (el.innerText || '').length
             if (len > curLen) curLen = len
@@ -1176,10 +1218,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       // Step 3.5：循环向下滚动页面以触发懒加载图片渲染与加载，然后再回到顶部
       try {
-        // 使用 scrollBy 逐步向下滚动，不依赖可能未完全计算的 scrollHeight
-        for (let i = 0; i < 6; i++) {
-          window.scrollBy(0, 800)
+        let currentScroll = 0
+        // 最多滚动 30 次，防止无限循环
+        for (let i = 0; i < 30; i++) {
+          currentScroll += 800
+          window.scrollTo(0, currentScroll)
           await sleep(300)
+          const newHeight = document.body.scrollHeight
+          if (currentScroll >= newHeight) {
+            break
+          }
         }
         window.scrollTo(0, 0)
         await sleep(500)
@@ -1386,8 +1434,23 @@ function showNotification(message, type = 'success') {
   }, 3000)
 }
 
+function isSamePage(url1, url2) {
+  try {
+    const u1 = new URL(url1)
+    const u2 = new URL(url2)
+    return u1.host === u2.host && u1.pathname === u2.pathname
+  } catch {
+    return false
+  }
+}
+
 // 检测 article 内是否有 X Notes 长文卡片，并返回其完整 URL（否则返回 null）
 function getXNotesCardUrl(article) {
+  // 如果当前已经是长文页面，则直接返回 null，避免重复/循环抓取
+  if (location.pathname.includes('/article/')) {
+    return null
+  }
+
   // 提取推文内所有链接，寻找指向 status 详情页或 i/article 页的链接
   const links = Array.from(article.querySelectorAll('a[href]'))
   for (const link of links) {
@@ -1396,16 +1459,20 @@ function getXNotesCardUrl(article) {
     const m = href.match(/https?:\/\/(x|twitter)\.com\/(?:[^/?#]+\/status\/\d+|i\/article\/\d+)/)
     if (m) {
       const isArticleLink = href.includes('/i/article/')
-      const isCardLink = link.closest('[data-testid="card.wrapper"]') !== null
+      // 更加宽松的 card 匹配，且排除 quote tweet
+      const isCardLink = link.closest('[data-testid*="card"]') !== null &&
+                         link.closest('[data-testid="quoteTweet-container"]') === null &&
+                         link.closest('[data-testid="quote-tweet"]') === null &&
+                         link.closest('[data-testid="quote"]') === null
       if (isArticleLink || isCardLink) {
         return m[0]
       }
     }
   }
 
-  // Strategy 2: X Notes 文章推文 — feed 中以 [data-testid="article-cover-image"] 标识
+  // Strategy 2: X Notes 文章推文 — feed 中以 [data-testid="article-cover-image"] 或 [data-testid="article-cover"] 标识
   // 此类推文本身即为 Notes 长文，其推文状态页就是文章全文页
-  if (article.querySelector('[data-testid="article-cover-image"]')) {
+  if (article.querySelector('[data-testid="article-cover-image"]') || article.querySelector('[data-testid="article-cover"]')) {
     // 优先从 time 元素的父级 <a> 获取推文自身的 status URL（最可靠）
     const timeEl = article.querySelector('time')
     const timeLink = timeEl && timeEl.closest('a[href*="/status/"]')

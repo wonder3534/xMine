@@ -152,21 +152,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const senderTabId = (sender.tab && sender.tab.id) ? sender.tab.id : null
 
     const TIMEOUT_MS = 30000
+    let bgWindowId = null
     let bgTabId = null
     let timedOut = false
 
     ;(async () => {
       try {
-        // 后台静默打开目标 tab，不夺取焦点
-        const tab = await chrome.tabs.create({ url: noteUrl, active: false })
-        bgTabId = tab.id
+        // 创建一个独立窗口，不夺取焦点且保证 IntersectionObserver 能正常触发懒加载
+        const win = await chrome.windows.create({
+          url: noteUrl,
+          focused: false,
+          width: 1200,
+          height: 900,
+          type: 'popup'
+        })
+        bgWindowId = win.id
+        
+        // 获取该窗口中的 tab ID
+        const tabs = await chrome.tabs.query({ windowId: bgWindowId })
+        bgTabId = tabs && tabs[0] ? tabs[0].id : null
+        if (!bgTabId) throw new Error('无法创建后台标签页')
 
-        // 超时保护：30 秒后强制关闭后台 tab 并回传错误
+        // 超时保护：30 秒后强制关闭后台窗口并回传错误
         const timeoutHandle = setTimeout(async () => {
           timedOut = true
-          if (bgTabId !== null) {
-            try { await chrome.tabs.remove(bgTabId) } catch {}
-            bgTabId = null
+          if (bgWindowId !== null) {
+            try { await chrome.windows.remove(bgWindowId) } catch {}
+            bgWindowId = null
           }
           if (senderTabId) {
             try {
@@ -181,15 +193,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }, TIMEOUT_MS)
 
         // 等待 tab 加载完成（status === 'complete'）
-        await new Promise((resolve) => {
-          function onUpdated(tabId, changeInfo) {
-            if (tabId === bgTabId && changeInfo.status === 'complete') {
-              chrome.tabs.onUpdated.removeListener(onUpdated)
-              resolve()
+        const tabInfo = await chrome.tabs.get(bgTabId)
+        if (tabInfo.status !== 'complete') {
+          await new Promise((resolve) => {
+            function onUpdated(tabId, changeInfo) {
+              if (tabId === bgTabId && changeInfo.status === 'complete') {
+                chrome.tabs.onUpdated.removeListener(onUpdated)
+                resolve()
+              }
             }
-          }
-          chrome.tabs.onUpdated.addListener(onUpdated)
-        })
+            chrome.tabs.onUpdated.addListener(onUpdated)
+          })
+        }
 
         if (timedOut) return
 
@@ -215,10 +230,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         clearTimeout(timeoutHandle)
         if (timedOut) return
 
-        // 关闭后台 tab
-        if (bgTabId !== null) {
-          try { await chrome.tabs.remove(bgTabId) } catch {}
-          bgTabId = null
+        // 关闭后台窗口
+        if (bgWindowId !== null) {
+          try { await chrome.windows.remove(bgWindowId) } catch {}
+          bgWindowId = null
         }
 
         if (!scrapeResult.ok || !scrapeResult.item) {
@@ -262,8 +277,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
       } catch (e) {
-        if (bgTabId !== null) {
-          try { await chrome.tabs.remove(bgTabId) } catch {}
+        if (bgWindowId !== null) {
+          try { await chrome.windows.remove(bgWindowId) } catch {}
         }
         if (senderTabId && !timedOut) {
           try {
